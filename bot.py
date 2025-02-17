@@ -1,77 +1,38 @@
-import os
-import logging
 import asyncio
-from aiogram import Bot, Dispatcher, types
+import logging
+import os
+import json
+import wave
+import random
+from aiogram import Bot, Dispatcher, F, Router
 from aiogram.types import Message
 from aiogram.filters import Command
-from aiogram.fsm.storage.memory import MemoryStorage
 from vosk import Model, KaldiRecognizer
-import wave
-import json
 
-# Включаем логирование
+# Настройка логирования
 logging.basicConfig(level=logging.INFO)
 
-# Загрузка API-токена из переменной окружения
-TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+# Токен бота. Рекомендуется установить его в переменную окружения TELEGRAM_BOT_TOKEN
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "YOUR_TOKEN_HERE")
 
-# Инициализация бота и диспетчера
+# Инициализация бота, диспетчера и маршрутизатора
 bot = Bot(token=TOKEN)
-dp = Dispatcher(storage=MemoryStorage())
+dp = Dispatcher()
+router = Router()
 
-# Загрузка модели Vosk для распознавания речи
+# Загрузка Vosk-модели. Папка "model" должна существовать и содержать модель.
 MODEL_PATH = "model"
 if not os.path.exists(MODEL_PATH):
     raise Exception("Модель Vosk не найдена! Скачайте и разместите её в папке 'model'.")
 model = Model(MODEL_PATH)
 
 # Обработчик команды /start
-@dp.message(Command("start"))
+@router.message(Command("start"))
 async def cmd_start(message: Message):
-    await message.answer("Ahoj! Som Slovenský jazykový bot. Napíš mi správu alebo pošli hlasovú nahrávku.")
+    await message.answer("Ahoj! Som slovenský jazykový bot. Pošli mi textovú alebo hlasovú správu.")
 
-# Обработчик текстовых сообщений
-@dp.message()
-async def handle_text(message: Message):
-    response = f"Dostal som tvoju správu: {message.text}"
-    await message.answer(response)
-
-# Обработчик голосовых сообщений
-@dp.message(content_types=types.ContentType.VOICE)
-async def handle_voice(message: Message):
-    voice = await message.voice.download()
-    file_path = "voice.ogg"
-    with open(file_path, "wb") as f:
-        f.write(voice.getvalue())
-    
-    # Конвертируем в WAV
-    wav_path = "voice.wav"
-    os.system(f"ffmpeg -i {file_path} -ar 16000 -ac 1 -c:a pcm_s16le {wav_path}")
-    
-    # Распознаем текст
-    wf = wave.open(wav_path, "rb")
-    rec = KaldiRecognizer(model, wf.getframerate())
-    rec.SetWords(True)
-    while True:
-        data = wf.readframes(4000)
-        if len(data) == 0:
-            break
-        rec.AcceptWaveform(data)
-    
-    result = json.loads(rec.FinalResult())
-    recognized_text = result.get("text", "")
-    
-    if recognized_text:
-        await message.answer(f"Rozpoznaný text: {recognized_text}")
-    else:
-        await message.answer("Prepáč, nerozpoznal som tvoju správu.")
-    
-    # Удаляем файлы после обработки
-    os.remove(file_path)
-    os.remove(wav_path)
-
-# Обработчик запроса вопроса
-@dp.message(Command("question"))
+# Обработчик команды /question
+@router.message(Command("question"))
 async def cmd_question(message: Message):
     questions = [
         "Aké sú tvoje obľúbené koníčky?",
@@ -80,8 +41,49 @@ async def cmd_question(message: Message):
     ]
     await message.answer(f"Tu je otázka pre teba: {random.choice(questions)}")
 
-# Запуск бота
+# Обработчик текстовых сообщений
+@router.message(F.text)
+async def text_handler(message: Message):
+    await message.answer(f"Dostal som tvoju správu: {message.text}")
+
+# Обработчик голосовых сообщений
+@router.message(F.voice)
+async def voice_handler(message: Message):
+    # Скачиваем голосовое сообщение
+    voice_file = await message.voice.download()  # возвращает file-like объект
+    ogg_filename = "voice.ogg"
+    with open(ogg_filename, "wb") as f:
+        f.write(voice_file.getvalue())
+
+    # Конвертируем OGG в WAV с помощью ffmpeg (убедись, что ffmpeg установлен)
+    wav_filename = "voice.wav"
+    os.system(f"ffmpeg -i {ogg_filename} -ar 16000 -ac 1 -c:a pcm_s16le {wav_filename}")
+
+    # Распознаем голосовое сообщение с помощью Vosk
+    wf = wave.open(wav_filename, "rb")
+    rec = KaldiRecognizer(model, wf.getframerate())
+    rec.SetWords(True)
+    while True:
+        data = wf.readframes(4000)
+        if len(data) == 0:
+            break
+        rec.AcceptWaveform(data)
+    result = json.loads(rec.FinalResult())
+    recognized_text = result.get("text", "")
+    if recognized_text:
+        await message.answer(f"Rozpoznaný text: {recognized_text}")
+    else:
+        await message.answer("Prepáč, nerozpoznal som tvoju správu.")
+
+    # Удаляем временные файлы
+    os.remove(ogg_filename)
+    os.remove(wav_filename)
+
+# Главная функция для запуска бота
 async def main():
+    dp.include_router(router)  # Регистрируем маршрутизатор
+    # Удаляем возможный вебхук и сбрасываем ожидающие обновления
+    await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
