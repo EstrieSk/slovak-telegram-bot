@@ -1,0 +1,3 @@
+aiogram
+vosk
+ffmpeg-python
